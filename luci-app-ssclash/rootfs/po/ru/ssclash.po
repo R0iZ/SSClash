@@ -301,6 +301,36 @@ msgstr "Режим TUN-интерфейса. Создаёт виртуальны
 msgid "Hybrid mode (best for gaming). TCP via TPROXY (stable), UDP via TUN (low latency). Optimal for online games requiring fast UDP."
 msgstr "Гибридный режим (лучший для игр). TCP через TPROXY (стабильно), UDP через TUN (низкая задержка). Оптимален для онлайн‑игр, требующих быстрого UDP."
 
+msgid "Domain Routing Mode"
+msgstr "Режим доменной маршрутизации"
+
+msgid "Choose how domain-based rules are handled at DNS/firewall level. Real-IP Domain Set keeps real DNS answers and asks dnsmasq to put resolved IPs into an nftables set for routing."
+msgstr "Выберите, как обрабатывать доменные правила на уровне DNS/firewall. Real-IP Domain Set оставляет реальные DNS-ответы и просит dnsmasq помещать резолвнутые IP в nftables set для маршрутизации."
+
+msgid "Off"
+msgstr "Отключено"
+
+msgid "Real-IP Domain Set (nftables)"
+msgstr "Real-IP Domain Set (nftables)"
+
+msgid "Set timeout"
+msgstr "Таймаут set"
+
+msgid "Examples: 30m, 6h, 24h. Keep this longer than client DNS cache TTL."
+msgstr "Примеры: 30m, 6h, 24h. Держите значение больше TTL DNS-кэша клиентов."
+
+msgid "Real-IP Domain Set: "
+msgstr "Real-IP Domain Set: "
+
+msgid "SSClash generates dnsmasq nftset rules from proxied domain rule-providers. Clients receive real IPs; dnsmasq adds those IPs to nft set inet clash domain_proxy, and nftables routes matching traffic through the selected proxy mode. Requires firewall4/nftables and clients using router DNS."
+msgstr "SSClash генерирует правила dnsmasq nftset из проксируемых доменных rule-providers. Клиенты получают реальные IP; dnsmasq добавляет эти IP в nft set inet clash domain_proxy, а nftables маршрутизирует совпадающий трафик через выбранный режим прокси. Требуется firewall4/nftables и использование DNS роутера клиентами."
+
+msgid "Off: "
+msgstr "Отключено: "
+
+msgid "Use the normal SSClash DNS/firewall behavior without real-IP domain set routing."
+msgstr "Использовать обычное поведение DNS/firewall SSClash без маршрутизации real-IP domain set."
+
 msgid "TUN Stack"
 msgstr "Стек TUN"
 

@@ -375,6 +375,147 @@ function transformProxyMode(content, proxyMode, tunStack) {
     return newLines.join('\n');
 }
 
+function extractDomainSetRuleProviders(content) {
+    const lines = content.split('\n');
+    const providers = {};
+    const proxiedRuleSets = new Set();
+    let inProviders = false;
+    let currentProvider = null;
+    let inRules = false;
+
+    for (const rawLine of lines) {
+        const line = rawLine.replace(/\r$/, '');
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) continue;
+
+        if (/^[A-Za-z][^:\s]*:/.test(line) && !/^\s/.test(line)) {
+            inProviders = trimmed.startsWith('rule-providers:');
+            inRules = trimmed.startsWith('rules:');
+            currentProvider = null;
+            continue;
+        }
+
+        if (inProviders) {
+            const providerMatch = line.match(/^\s{2}([^#:\s][^:]*):\s*(?:#.*)?$/);
+            if (providerMatch) {
+                currentProvider = providerMatch[1].trim();
+                providers[currentProvider] = { behavior: 'classical' };
+                continue;
+            }
+
+            if (currentProvider) {
+                const behaviorMatch = line.match(/^\s+behavior:\s*([^#\s]+)/);
+                if (behaviorMatch) {
+                    providers[currentProvider].behavior = behaviorMatch[1].trim();
+                }
+            }
+        }
+
+        if (inRules) {
+            const ruleMatch = trimmed.match(/^-\s*RULE-SET\s*,\s*([^,]+)\s*,\s*([^,\s]+)/i);
+            if (!ruleMatch) continue;
+
+            const name = ruleMatch[1].trim();
+            const action = ruleMatch[2].trim().toUpperCase();
+            if (['DIRECT', 'REJECT', 'REJECT-DROP', 'PASS'].includes(action)) continue;
+            proxiedRuleSets.add(name);
+        }
+    }
+
+    return Array.from(proxiedRuleSets).filter(name => {
+        const provider = providers[name];
+        return provider && ['domain', 'classical'].includes(provider.behavior);
+    }).sort();
+}
+
+function stripManagedDomainSetFakeIpFilter(lines) {
+    const result = [];
+    let skipping = false;
+
+    for (const line of lines) {
+        if (line.includes('# SSClash Domain Set: BEGIN')) {
+            skipping = true;
+            continue;
+        }
+        if (line.includes('# SSClash Domain Set: END')) {
+            skipping = false;
+            continue;
+        }
+        if (!skipping) result.push(line);
+    }
+
+    return result;
+}
+
+function transformDomainSetMode(content, domainSetMode) {
+    let lines = stripManagedDomainSetFakeIpFilter(content.split('\n'));
+    if (domainSetMode !== 'domain-set') {
+        return lines.join('\n');
+    }
+
+    const providerNames = extractDomainSetRuleProviders(lines.join('\n'));
+    if (providerNames.length === 0) {
+        return lines.join('\n');
+    }
+
+    const managedBlock = [
+        '    # SSClash Domain Set: BEGIN',
+        ...providerNames.map(name => `    - RULE-SET,${name},real-ip`),
+        '    # SSClash Domain Set: END'
+    ];
+
+    let dnsStart = -1;
+    let dnsEnd = lines.length;
+    for (let i = 0; i < lines.length; i++) {
+        if (lines[i].match(/^dns:\s*$/)) {
+            dnsStart = i;
+            break;
+        }
+    }
+    if (dnsStart === -1) return lines.join('\n');
+
+    for (let i = dnsStart + 1; i < lines.length; i++) {
+        if (lines[i].match(/^[A-Za-z][^:\s]*:/) && !lines[i].match(/^\s/)) {
+            dnsEnd = i;
+            break;
+        }
+    }
+
+    let filterModeIndex = -1;
+    let filterIndex = -1;
+    let filterEnd = dnsEnd;
+    for (let i = dnsStart + 1; i < dnsEnd; i++) {
+        if (lines[i].match(/^\s{2}fake-ip-filter-mode:/)) filterModeIndex = i;
+        if (lines[i].match(/^\s{2}fake-ip-filter:\s*$/)) {
+            filterIndex = i;
+            filterEnd = i + 1;
+            while (filterEnd < dnsEnd && (lines[filterEnd].match(/^\s{4}/) || lines[filterEnd].trim() === '')) {
+                filterEnd++;
+            }
+            break;
+        }
+    }
+
+    if (filterModeIndex !== -1) {
+        lines[filterModeIndex] = '  fake-ip-filter-mode: rule';
+    } else {
+        lines.splice(dnsStart + 1, 0, '  fake-ip-filter-mode: rule');
+        dnsEnd++;
+        if (filterIndex !== -1) {
+            filterIndex++;
+            filterEnd++;
+        }
+    }
+
+    if (filterIndex !== -1) {
+        lines.splice(filterEnd, 0, ...managedBlock);
+    } else {
+        lines.splice(dnsStart + 2, 0, '  fake-ip-filter:', ...managedBlock);
+    }
+
+    return lines.join('\n');
+}
+
 async function detectCurrentProxyMode() {
     try {
         const configContent = await L.resolveDefault(fs.read('/opt/clash/config.yaml'), '');
@@ -424,6 +565,8 @@ async function loadSettings() {
         const settings = {
             mode: 'exclude',
             proxyMode: '',
+            domainSetMode: 'off',
+            domainSetTimeout: '24h',
             tunStack: 'system',
             autoDetectLan: true,
             autoDetectWan: true,
@@ -447,6 +590,8 @@ async function loadSettings() {
             switch(key) {
                 case 'INTERFACE_MODE': settings.mode = value; break;
                 case 'PROXY_MODE': settings.proxyMode = value; break;
+                case 'DOMAIN_SET_MODE': settings.domainSetMode = value || 'off'; break;
+                case 'DOMAIN_SET_TIMEOUT': settings.domainSetTimeout = value || '24h'; break;
                 case 'TUN_STACK': settings.tunStack = value || 'system'; break;
                 case 'AUTO_DETECT_LAN': settings.autoDetectLan = value === 'true'; break;
                 case 'AUTO_DETECT_WAN': settings.autoDetectWan = value === 'true'; break;
@@ -477,6 +622,8 @@ async function loadSettings() {
         return {
             mode: 'exclude',
             proxyMode: '',
+            domainSetMode: 'off',
+            domainSetTimeout: '24h',
             tunStack: 'system',
             autoDetectLan: true,
             autoDetectWan: true,
@@ -510,7 +657,7 @@ async function loadInterfacesByMode(mode) {
     }
 }
 
-async function saveSettings(mode, proxyMode, tunStack, autoDetectLan, autoDetectWan, blockQuic, useTmpfsRules, interfaces, enableHwid, hwidUserAgent, hwidDeviceOS) {
+async function saveSettings(mode, proxyMode, domainSetMode, domainSetTimeout, tunStack, autoDetectLan, autoDetectWan, blockQuic, useTmpfsRules, interfaces, enableHwid, hwidUserAgent, hwidDeviceOS) {
     try {
         let detectedLan = '';
         let detectedWan = '';
@@ -533,9 +680,12 @@ async function saveSettings(mode, proxyMode, tunStack, autoDetectLan, autoDetect
 
         const includedInterfaces = mode === 'explicit' ? cleanInterfaces : [];
         const excludedInterfaces = mode === 'exclude' ? cleanInterfaces : [];
+        const normalizedDomainSetTimeout = /^[0-9]+[smhd]$/.test(domainSetTimeout || '') ? domainSetTimeout : '24h';
 
         const settingsContent = `INTERFACE_MODE=${mode}
 PROXY_MODE=${proxyMode}
+DOMAIN_SET_MODE=${domainSetMode}
+DOMAIN_SET_TIMEOUT=${normalizedDomainSetTimeout}
 TUN_STACK=${tunStack}
 AUTO_DETECT_LAN=${autoDetectLan}
 AUTO_DETECT_WAN=${autoDetectWan}
@@ -555,6 +705,7 @@ HWID_DEVICE_OS=${hwidDeviceOS}
         const configContent = await L.resolveDefault(fs.read('/opt/clash/config.yaml'), '');
         if (configContent) {
             let updatedConfig = transformProxyMode(configContent, proxyMode, tunStack);
+            updatedConfig = transformDomainSetMode(updatedConfig, domainSetMode);
 
             if (enableHwid) {
                 const hwidValues = await getHwidValues();
@@ -1093,6 +1244,78 @@ function createProxyModeSection(currentProxyMode) {
     return container;
 }
 
+function createDomainSetModeSection(currentDomainSetMode, currentDomainSetTimeout) {
+    const container = E('div', { 'class': 'cbi-section' });
+
+    container.appendChild(E('h3', _('Domain Routing Mode')));
+    container.appendChild(E('div', { 'class': 'cbi-section-descr' },
+        _('Choose how domain-based rules are handled at DNS/firewall level. Real-IP Domain Set keeps real DNS answers and asks dnsmasq to put resolved IPs into an nftables set for routing.')
+    ));
+
+    const select = E('select', {
+        'class': 'cbi-input-select',
+        'id': 'domain-set-mode-select'
+    }, [
+        E('option', { 'value': 'off' }, _('Off')),
+        E('option', { 'value': 'domain-set' }, _('Real-IP Domain Set (nftables)'))
+    ]);
+
+    const timeoutInput = E('input', {
+        'class': 'cbi-input-text',
+        'id': 'domain-set-timeout',
+        'type': 'text',
+        'value': currentDomainSetTimeout || '24h',
+        'style': 'max-width: 120px;'
+    });
+
+    const timeoutRow = E('div', {
+        'id': 'domain-set-timeout-row',
+        'style': 'margin-top: 10px; display: none; align-items: center; gap: 8px;'
+    }, [
+        E('label', { 'for': 'domain-set-timeout', 'style': 'font-weight: bold;' }, _('Set timeout')),
+        timeoutInput,
+        E('span', { 'style': 'font-size: 12px; color: #666;' }, _('Examples: 30m, 6h, 24h. Keep this longer than client DNS cache TTL.'))
+    ]);
+
+    const hint = E('div', {
+        'id': 'domain-set-mode-hint',
+        'style': 'margin-top: 8px; padding: 10px; border-left: 3px solid #777; border-radius: 3px; font-size: 12px; background: #f9f9f9; color: ' + LIGHT_PANEL_TEXT + ';'
+    });
+
+    function updateHint() {
+        const enabled = select.value === 'domain-set';
+        timeoutRow.style.display = enabled ? 'flex' : 'none';
+        hint.innerHTML = '';
+
+        if (enabled) {
+            hint.style.borderLeftColor = '#28a745';
+            hint.appendChild(E('strong', {}, _('Real-IP Domain Set: ') ));
+            hint.appendChild(document.createTextNode(
+                _('SSClash generates dnsmasq nftset rules from proxied domain rule-providers. Clients receive real IPs; dnsmasq adds those IPs to nft set inet clash domain_proxy, and nftables routes matching traffic through the selected proxy mode. Requires firewall4/nftables and clients using router DNS.')
+            ));
+        } else {
+            hint.style.borderLeftColor = '#777';
+            hint.appendChild(E('strong', {}, _('Off: ') ));
+            hint.appendChild(document.createTextNode(
+                _('Use the normal SSClash DNS/firewall behavior without real-IP domain set routing.')
+            ));
+        }
+    }
+
+    setTimeout(() => {
+        select.value = currentDomainSetMode || 'off';
+        updateHint();
+    }, 0);
+    select.addEventListener('change', updateHint);
+
+    container.appendChild(E('div', { 'style': 'margin: 10px 0;' }, [
+        select,
+        timeoutRow,
+        hint
+    ]));
+    return container;
+}
+
 function createTunStackSection(currentTunStack) {
     const container = E('div', {
         'id': 'tun-stack-container',
@@ -1624,6 +1847,7 @@ return view.extend({
 
         const currentProxyMode = settings.proxyMode || await detectCurrentProxyMode();
         const proxyModeSection = createProxyModeSection(currentProxyMode);
+        const domainSetModeSection = createDomainSetModeSection(settings.domainSetMode || 'off', settings.domainSetTimeout || '24h');
         const tunStackSection = createTunStackSection(settings.tunStack || 'system');
         tunStackSection.style.display = (currentProxyMode === 'tun' || currentProxyMode === 'mixed') ? 'block' : 'none';
 
@@ -1740,6 +1964,10 @@ return view.extend({
                 const mode = modeSelector.querySelector('input[name="interface_mode"]:checked').value;
                 const proxyModeSelect = document.getElementById('proxy-mode-select');
                 const savedProxyMode = proxyModeSelect ? proxyModeSelect.value : 'tproxy';
+                const domainSetModeSelect = document.getElementById('domain-set-mode-select');
+                const savedDomainSetMode = domainSetModeSelect ? domainSetModeSelect.value : 'off';
+                const domainSetTimeoutInput = document.getElementById('domain-set-timeout');
+                const savedDomainSetTimeout = domainSetTimeoutInput ? (domainSetTimeoutInput.value || '24h').trim() : '24h';
                 const tunStackSelect = document.getElementById('tun-stack-select');
                 const savedTunStack = tunStackSelect ? tunStackSelect.value : 'system';
                 const autoDetectLan = autoDetectOptions.querySelector('#auto_detect_lan').checked;
@@ -1759,6 +1987,8 @@ return view.extend({
                 const success = await saveSettings(
                     mode,
                     savedProxyMode,
+                    savedDomainSetMode,
+                    savedDomainSetTimeout,
                     savedTunStack,
                     autoDetectLan,
                     autoDetectWan,
@@ -1980,6 +2210,7 @@ return view.extend({
         const view = E([
             modeSelector,
             proxyModeSection,
+            domainSetModeSection,
             tunStackSection,
             autoDetectOptions,
             interfaceSelector,

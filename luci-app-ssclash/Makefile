@@ -4,9 +4,9 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-ssclash
-PKG_VERSION:=4.5.1
-PKG_RELEASE:=2
-PKG_MAINTAINER:=ZeroChaos <dev@null.la>
+PKG_VERSION:=0.1.2
+PKG_RELEASE:=3
+PKG_MAINTAINER:=R0iZ <dev@null.la>
 
 LUCI_TITLE:=LuCI Support for SSClash
 LUCI_DEPENDS:=+luci-base +coreutils-base64 +kmod-tun

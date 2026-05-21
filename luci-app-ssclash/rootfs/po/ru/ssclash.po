@@ -71,6 +71,9 @@ msgstr "Конфигурация Clash"
 msgid "Your current Clash config. When applied, the changes will be saved and the service will be restarted."
 msgstr "Ваша текущая конфигурация Clash. При применении изменения будут сохранены, а служба перезапущена."
 
+msgid "Your current Clash config. Real-IP Domain Set mode is enabled: the editor shows a recommended DNS block (no fake-ip) between SSClash markers — adjust nameserver to your LAN DNS. Save to write config.yaml."
+msgstr "Текущая конфигурация Clash. Включён Real-IP Domain Set: в редакторе показан рекомендуемый блок DNS (без fake-ip) между маркерами SSClash — укажите nameserver вашего LAN DNS. Сохраните, чтобы записать config.yaml."
+
 msgid "Save & Restart core"
 msgstr "Сохранить и перезапустить ядро"
 
@@ -322,8 +325,8 @@ msgstr "Примеры: 30m, 6h, 24h. Держите значение больш
 msgid "Real-IP Domain Set: "
 msgstr "Real-IP Domain Set: "
 
-msgid "SSClash generates dnsmasq nftset rules from proxied domain rule-providers. Clients receive real IPs; dnsmasq adds those IPs to nft set inet clash domain_proxy, and nftables routes matching traffic through the selected proxy mode. Requires firewall4/nftables and clients using router DNS."
-msgstr "SSClash генерирует правила dnsmasq nftset из проксируемых доменных rule-providers. Клиенты получают реальные IP; dnsmasq добавляет эти IP в nft set inet clash domain_proxy, а nftables маршрутизирует совпадающий трафик через выбранный режим прокси. Требуется firewall4/nftables и использование DNS роутера клиентами."
+msgid "SSClash generates dnsmasq nftset rules from proxied domain rule-providers and loads IPv4 CIDR entries into inet clash domain_proxy_cidr. Clients receive real IPs; dnsmasq adds resolved A records to domain_proxy. Nftables routes only matching traffic through the selected proxy mode. Requires firewall4/nftables and clients using router DNS. Saving settings or opening the Configuration tab inserts a DNS sample block (no fake-ip) into config.yaml."
+msgstr "SSClash генерирует dnsmasq nftset из доменных rule-providers и загружает IPv4 CIDR из тех же providers в inet clash domain_proxy_cidr. Клиенты получают реальные IP; dnsmasq добавляет A-записи в domain_proxy. Nftables маршрутизирует только совпадающий трафик через выбранный режим прокси. Нужны firewall4/nftables и DNS роутера на клиентах. При сохранении настроек или открытии вкладки «Конфигурация» в config.yaml вставляется образец DNS (без fake-ip)."
 
 msgid "Off: "
 msgstr "Отключено: "

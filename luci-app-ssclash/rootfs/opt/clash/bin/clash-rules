@@ -7,6 +7,8 @@
 # 2. Explicit Mode: Proxies traffic ONLY from specified interfaces (e.g., LAN bridge).
 
 CONFIG_FILE="/opt/clash/config.yaml"
+# Bumped when domain-set / firewall behavior changes (visible in logread).
+readonly CLASH_RULES_ID="2026-05-domain-set-cidr"
 SETTINGS_FILE="/opt/clash/settings"
 
 # Directory to cache subscription IPs for performance
@@ -25,7 +27,9 @@ readonly FAKEIP_WHITELIST_DIGEST_FILE="/tmp/clash/fakeip_whitelist_applied.diges
 readonly DOMAIN_SET_DNSMASQ_DIR="/tmp/dnsmasq.d"
 readonly DOMAIN_SET_DNSMASQ_FILE="${DOMAIN_SET_DNSMASQ_DIR}/ssclash-domain-set.conf"
 readonly DOMAIN_SET_NFT_NAME="domain_proxy"
+readonly DOMAIN_SET_CIDR_NFT_NAME="domain_proxy_cidr"
 readonly DOMAIN_SET_NFT_DNSMASQ_TARGET="4#inet#clash#${DOMAIN_SET_NFT_NAME}"
+readonly DOMAIN_SET_CIDR_DIGEST_FILE="/tmp/clash/domain_set_static_cidr.digest"
 
 # Global Settings Variables
 # These are populated by load_all_settings_once() to avoid repeated file reads.
@@ -103,6 +107,8 @@ load_all_settings_once() {
     fi
 
     while IFS='=' read -r key value; do
+        # Strip CR/LF and surrounding whitespace (LuCI/editor line endings).
+        value=$(printf '%s' "$value" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         case "$key" in
             "INTERFACE_MODE") MODE="$value" ;;
             "PROXY_MODE") PROXY_MODE="$value" ;;
@@ -995,47 +1001,33 @@ extract_ipv4_cidr_from_rule_provider_file() {
 # comment inside the whitelist file).
 AUTO_FAKEIP_SOURCES=""
 AUTO_FAKEIP_INCOMPLETE="false"
-generate_fakeip_whitelist_auto() {
-    AUTO_FAKEIP_SOURCES=""
-    AUTO_FAKEIP_INCOMPLETE="false"
+COLLECT_CIDRS_SOURCES=""
+COLLECT_CIDRS_INCOMPLETE="false"
 
-    local proxy_sets
-    proxy_sets=$(extract_proxy_rule_set_names)
+# Collect validated IPv4 CIDRs from rule-provider files for the given rule-set names.
+# $1 — log prefix; $2 — newline-separated rule-set names.
+# Prints one CIDR per line; sets COLLECT_CIDRS_SOURCES and COLLECT_CIDRS_INCOMPLETE.
+collect_ipv4_cidrs_for_rule_set_names() {
+    local log_prefix="$1"
+    local proxy_sets="$2"
 
-    # dns.fake-ip-filter: supplements rule-providers used for IP-CIDR extraction:
-    # - whitelist: Mihomo uses "- RULE-SET:<name>" in this list only.
-    # - rule: comma routing-style "- RULE-SET,<name>,fake-ip" / real-ip; only
-    #   fake-ip rows are merged (colon entries are not used in rule mode per docs).
-    local filter_colon filter_comma
-    if [ "$FAKE_IP_FILTER_MODE" = "whitelist" ]; then
-        filter_colon=$(extract_fake_ip_filter_rule_sets)
-        proxy_sets=$(printf '%s\n%s\n' "$proxy_sets" "$filter_colon" \
-            | grep -v '^$' | sort -u)
-    elif [ "$FAKE_IP_FILTER_MODE" = "rule" ]; then
-        filter_comma=$(extract_fake_ip_filter_rule_sets_comma_fake_ip)
-        proxy_sets=$(printf '%s\n%s\n' "$proxy_sets" "$filter_comma" \
-            | grep -v '^$' | sort -u)
-    fi
-
+    COLLECT_CIDRS_SOURCES=""
+    COLLECT_CIDRS_INCOMPLETE="false"
     [ -z "$proxy_sets" ] && return 0
 
     local providers
     providers=$(extract_rule_providers)
     if [ -z "$providers" ]; then
-        AUTO_FAKEIP_INCOMPLETE="true"
-        msg "Auto fakeip whitelist: rule-providers are referenced but none could be parsed"
+        COLLECT_CIDRS_INCOMPLETE="true"
+        msg "$log_prefix: rule-providers are referenced but none could be parsed"
         return 0
     fi
 
-    local base_dir
+    local base_dir tmp_out tmp_sources tmp_incomplete
     base_dir=$(get_providers_base_dir)
-
-    local tmp_out
-    tmp_out="/tmp/clash/clash_autowl_raw.$$"
-    local tmp_sources
-    tmp_sources="/tmp/clash/clash_autowl_sources.$$"
-    local tmp_incomplete
-    tmp_incomplete="/tmp/clash/clash_autowl_incomplete.$$"
+    tmp_out="/tmp/clash/collect_cidr_raw.$$"
+    tmp_sources="/tmp/clash/collect_cidr_sources.$$"
+    tmp_incomplete="/tmp/clash/collect_cidr_incomplete.$$"
     mkdir -p /tmp/clash
     : > "$tmp_out"
     : > "$tmp_sources"
@@ -1044,17 +1036,15 @@ generate_fakeip_whitelist_auto() {
     local set_name
     echo "$proxy_sets" | while IFS= read -r set_name; do
         [ -z "$set_name" ] && continue
-        local provider_line
+        local provider_line behavior path full_path entries rc
         provider_line=$(echo "$providers" | awk -F'|' -v n="$set_name" '$1 == n { print; exit }')
         if [ -z "$provider_line" ]; then
-            msg "Auto fakeip whitelist: provider '$set_name' is referenced but not defined (skipped)"
+            msg "$log_prefix: provider '$set_name' is referenced but not defined (skipped)"
             echo "$set_name" >> "$tmp_incomplete"
             continue
         fi
 
-        local behavior type path full_path
         behavior=$(echo "$provider_line" | awk -F'|' '{print $2}')
-        type=$(echo "$provider_line" | awk -F'|' '{print $3}')
         path=$(echo "$provider_line" | awk -F'|' '{print $4}')
 
         case "$path" in
@@ -1064,16 +1054,15 @@ generate_fakeip_whitelist_auto() {
         esac
 
         if [ ! -f "$full_path" ]; then
-            msg "Auto fakeip whitelist: provider '$set_name' file not found: $full_path (skipped)"
+            msg "$log_prefix: provider '$set_name' file not found: $full_path (skipped)"
             echo "$set_name" >> "$tmp_incomplete"
             continue
         fi
 
-        local entries
         entries=$(extract_ipv4_cidr_from_rule_provider_file "$full_path" "$behavior")
-        local rc=$?
+        rc=$?
         if [ "$rc" -ne 0 ]; then
-            msg "Auto fakeip whitelist: provider '$set_name' could not be parsed: $full_path (skipped)"
+            msg "$log_prefix: provider '$set_name' could not be parsed: $full_path (skipped)"
             echo "$set_name" >> "$tmp_incomplete"
             continue
         fi
@@ -1083,7 +1072,6 @@ generate_fakeip_whitelist_auto() {
         fi
     done
 
-    # Validate + dedupe + sort, printing to stdout
     local line
     if [ -s "$tmp_out" ]; then
         sort -u "$tmp_out" | while IFS= read -r line; do
@@ -1095,13 +1083,43 @@ generate_fakeip_whitelist_auto() {
     fi
 
     if [ -s "$tmp_sources" ]; then
-        AUTO_FAKEIP_SOURCES=$(sort -u "$tmp_sources" | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+        COLLECT_CIDRS_SOURCES=$(sort -u "$tmp_sources" | tr '\n' ' ' | sed 's/[[:space:]]*$//')
     fi
     if [ -s "$tmp_incomplete" ]; then
-        AUTO_FAKEIP_INCOMPLETE="true"
+        COLLECT_CIDRS_INCOMPLETE="true"
     fi
 
     rm -f "$tmp_out" "$tmp_sources" "$tmp_incomplete"
+}
+
+generate_fakeip_whitelist_auto() {
+    AUTO_FAKEIP_SOURCES=""
+    AUTO_FAKEIP_INCOMPLETE="false"
+
+    local proxy_sets filter_colon filter_comma
+    proxy_sets=$(extract_proxy_rule_set_names)
+
+    if [ "$FAKE_IP_FILTER_MODE" = "whitelist" ]; then
+        filter_colon=$(extract_fake_ip_filter_rule_sets)
+        proxy_sets=$(printf '%s\n%s\n' "$proxy_sets" "$filter_colon" \
+            | grep -v '^$' | sort -u)
+    elif [ "$FAKE_IP_FILTER_MODE" = "rule" ]; then
+        filter_comma=$(extract_fake_ip_filter_rule_sets_comma_fake_ip)
+        proxy_sets=$(printf '%s\n%s\n' "$proxy_sets" "$filter_comma" \
+            | grep -v '^$' | sort -u)
+    fi
+
+    collect_ipv4_cidrs_for_rule_set_names "Auto fakeip whitelist" "$proxy_sets"
+    AUTO_FAKEIP_SOURCES="$COLLECT_CIDRS_SOURCES"
+    AUTO_FAKEIP_INCOMPLETE="$COLLECT_CIDRS_INCOMPLETE"
+}
+
+# IPv4 CIDRs from proxy rule-providers (same sources as fakeip auto-whitelist, without
+# dns.fake-ip-filter extras) for Real-IP Domain Set firewall marking.
+generate_domain_set_proxy_cidrs() {
+    local proxy_sets
+    proxy_sets=$(extract_proxy_rule_set_names)
+    collect_ipv4_cidrs_for_rule_set_names "Domain set" "$proxy_sets"
 }
 
 # Extract domain entries from a rule-provider file for Real-IP Domain Set mode.
@@ -1286,6 +1304,123 @@ refresh_domain_set_dnsmasq_config() {
     fi
 
     generate_domain_set_dnsmasq_config
+}
+
+# Flush and repopulate an inet clash interval set from a newline-separated CIDR list.
+populate_nft_interval_set() {
+    local set_name="$1"
+    local cidrs="$2"
+    local nft_batch="/tmp/clash/${set_name}_nft.$$"
+
+    mkdir -p /tmp/clash
+    {
+        printf 'flush set inet clash %s\n' "$set_name"
+        if [ -n "$cidrs" ]; then
+            printf '%s\n' "$cidrs" | awk -v set="$set_name" '
+                BEGIN { count=0; line="" }
+                {
+                    if (count > 0) line = line ","
+                    line = line $0
+                    count++
+                    if (count >= 500) {
+                        print "add element inet clash " set " { " line " }"
+                        line = ""; count = 0
+                    }
+                }
+                END { if (count > 0) print "add element inet clash " set " { " line " }" }
+            '
+        fi
+    } > "$nft_batch"
+    nft -f "$nft_batch"
+    local rc=$?
+    rm -f "$nft_batch"
+    return "$rc"
+}
+
+# Create domain_proxy / domain_proxy_cidr sets when missing (table must already exist).
+ensure_domain_set_nft_sets() {
+    is_domain_set_mode || return 0
+
+    if ! hash nft 2>/dev/null; then
+        warn "nftables not available; cannot ensure domain set nft sets"
+        return 1
+    fi
+    if ! nft list table inet clash >/dev/null 2>&1; then
+        warn "inet clash table missing; run clash-rules start first"
+        return 1
+    fi
+
+    if ! nft list set inet clash "$DOMAIN_SET_NFT_NAME" >/dev/null 2>&1; then
+        if ! nft add set inet clash "$DOMAIN_SET_NFT_NAME" \
+            "{ type ipv4_addr; size 65535; flags dynamic,timeout; timeout $DOMAIN_SET_TIMEOUT; }"; then
+            warn "Failed to create nft set inet clash $DOMAIN_SET_NFT_NAME"
+            return 1
+        fi
+        msg "Created missing nft set inet clash $DOMAIN_SET_NFT_NAME (timeout $DOMAIN_SET_TIMEOUT)"
+    fi
+
+    if ! nft list set inet clash "$DOMAIN_SET_CIDR_NFT_NAME" >/dev/null 2>&1; then
+        if ! nft add set inet clash "$DOMAIN_SET_CIDR_NFT_NAME" \
+            '{ type ipv4_addr; flags interval; auto-merge; }'; then
+            warn "Failed to create nft set inet clash $DOMAIN_SET_CIDR_NFT_NAME"
+            return 1
+        fi
+        msg "Created missing nft set inet clash $DOMAIN_SET_CIDR_NFT_NAME (rule-provider IP-CIDR)"
+    fi
+
+    return 0
+}
+
+# Refresh static IP-CIDR entries in domain_proxy_cidr (does not touch dnsmasq dynamic set).
+update_domain_set_static_cidrs() {
+    is_domain_set_mode || return 0
+
+    local cidrs current_digest prev_digest count
+    cidrs=$(generate_domain_set_proxy_cidrs)
+
+    if [ "$COLLECT_CIDRS_INCOMPLETE" = "true" ]; then
+        msg "WARNING: Domain set IP-CIDR collection incomplete; some referenced providers were skipped"
+    fi
+
+    if [ -z "$cidrs" ]; then
+        current_digest="empty"
+    elif command -v sha256sum >/dev/null 2>&1; then
+        current_digest=$(printf '%s\n' "$cidrs" | LC_ALL=C sort -u | sha256sum | awk '{print $1}')
+    else
+        current_digest=$(printf '%s\n' "$cidrs" | LC_ALL=C sort -u | md5sum | awk '{print $1}')
+    fi
+
+    if ! hash nft 2>/dev/null; then
+        return 0
+    fi
+    if ! ensure_domain_set_nft_sets; then
+        return 1
+    fi
+
+    mkdir -p /tmp/clash 2>/dev/null
+    prev_digest=""
+    [ -f "$DOMAIN_SET_CIDR_DIGEST_FILE" ] && prev_digest=$(tr -d '\r\n' < "$DOMAIN_SET_CIDR_DIGEST_FILE")
+    if [ -n "$prev_digest" ] && [ "$current_digest" = "$prev_digest" ]; then
+        msg "Domain set static CIDR nft set unchanged (same digest, skipping rewrite)"
+        return 0
+    fi
+
+    if populate_nft_interval_set "$DOMAIN_SET_CIDR_NFT_NAME" "$cidrs"; then
+        count=0
+        [ -n "$cidrs" ] && count=$(printf '%s\n' "$cidrs" | grep -c . 2>/dev/null || echo 0)
+        if [ -n "$COLLECT_CIDRS_SOURCES" ]; then
+            msg "Updated nft $DOMAIN_SET_CIDR_NFT_NAME: $count IPv4 CIDR entries from rule-providers [$COLLECT_CIDRS_SOURCES]"
+        elif [ -n "$cidrs" ]; then
+            msg "Updated nft $DOMAIN_SET_CIDR_NFT_NAME: $count IPv4 CIDR entries from rule-providers"
+        else
+            msg "Domain set: no IPv4 CIDR entries in proxy rule-providers; $DOMAIN_SET_CIDR_NFT_NAME cleared"
+        fi
+        printf '%s\n' "$current_digest" > "$DOMAIN_SET_CIDR_DIGEST_FILE"
+        return 0
+    fi
+
+    msg "ERROR: Failed to update nft $DOMAIN_SET_CIDR_NFT_NAME; keeping previous set contents"
+    return 1
 }
 
 # Function to extract server IPs from config.yaml (with subscription support)
@@ -1650,6 +1785,8 @@ apply_nft_marking_mangle() {
         nft add rule inet clash CLASH_MARK ip daddr "$fake_ip_range" meta l4proto tcp counter meta mark set "$MARK_TPROXY"
         nft add rule inet clash CLASH_MARK ip daddr "$fake_ip_range" meta l4proto udp counter meta mark set "$udp_mark"
         msg "Marking applied only for fake-ip range: $fake_ip_range (UDP mark: $udp_mark)"
+    elif is_domain_set_mode; then
+        msg "Global marking skipped (domain set mode): only @${DOMAIN_SET_NFT_NAME} and @${DOMAIN_SET_CIDR_NFT_NAME} destinations are proxied (UDP mark: $udp_mark)"
     else
         nft add rule inet clash CLASH_MARK meta l4proto tcp counter meta mark set "$MARK_TPROXY"
         nft add rule inet clash CLASH_MARK meta l4proto udp counter meta mark set "$udp_mark"
@@ -1680,7 +1817,9 @@ apply_nft_domain_set_marking() {
     nft add rule inet clash CLASH_MARK ip daddr "@${DOMAIN_SET_NFT_NAME}" ct state new set update ip daddr "@${DOMAIN_SET_NFT_NAME}" 2>/dev/null
     nft add rule inet clash CLASH_MARK ip daddr "@${DOMAIN_SET_NFT_NAME}" meta l4proto tcp counter meta mark set "$MARK_TPROXY"
     nft add rule inet clash CLASH_MARK ip daddr "@${DOMAIN_SET_NFT_NAME}" meta l4proto udp counter meta mark set "$udp_mark"
-    msg "Domain set marking applied for nft set $DOMAIN_SET_NFT_NAME (UDP mark: $udp_mark, timeout: $DOMAIN_SET_TIMEOUT)"
+    nft add rule inet clash CLASH_MARK ip daddr "@${DOMAIN_SET_CIDR_NFT_NAME}" meta l4proto tcp counter meta mark set "$MARK_TPROXY"
+    nft add rule inet clash CLASH_MARK ip daddr "@${DOMAIN_SET_CIDR_NFT_NAME}" meta l4proto udp counter meta mark set "$udp_mark"
+    msg "Domain set marking applied for @${DOMAIN_SET_NFT_NAME} (dnsmasq, timeout $DOMAIN_SET_TIMEOUT) and @${DOMAIN_SET_CIDR_NFT_NAME} (rule-provider IP-CIDR) (UDP mark: $udp_mark)"
 }
 
 # For nftables - mirror simple SRC-IP-CIDR DIRECT/REJECT rules in explicit
@@ -1944,7 +2083,9 @@ apply_nft_output_rules() {
     if is_domain_set_mode; then
         nft add rule inet clash output ip daddr "@${DOMAIN_SET_NFT_NAME}" meta mark 0 meta l4proto tcp counter meta mark set "$MARK_TPROXY"
         nft add rule inet clash output ip daddr "@${DOMAIN_SET_NFT_NAME}" meta l4proto udp counter meta mark set "$output_udp_mark"
-        msg "OUTPUT: Marking applied for real-IP domain nft set $DOMAIN_SET_NFT_NAME"
+        nft add rule inet clash output ip daddr "@${DOMAIN_SET_CIDR_NFT_NAME}" meta mark 0 meta l4proto tcp counter meta mark set "$MARK_TPROXY"
+        nft add rule inet clash output ip daddr "@${DOMAIN_SET_CIDR_NFT_NAME}" meta l4proto udp counter meta mark set "$output_udp_mark"
+        msg "OUTPUT: Marking applied for @$DOMAIN_SET_NFT_NAME and @$DOMAIN_SET_CIDR_NFT_NAME"
     fi
 
     # Apply Clash exclusions after fake-ip marking, so root-originated requests
@@ -1953,9 +2094,13 @@ apply_nft_output_rules() {
     apply_nft_clash_exclusions_output
 
     if [ -z "$fake_ip_range" ]; then
-        nft add rule inet clash output meta mark 0 meta l4proto tcp meta mark set "$MARK_TPROXY"
-        nft add rule inet clash output meta mark 0 meta l4proto udp meta mark set "$output_udp_mark"
-        msg "OUTPUT: Marking applied for all traffic"
+        if is_domain_set_mode; then
+            msg "OUTPUT: Global marking skipped (domain set mode); only @${DOMAIN_SET_NFT_NAME} and @${DOMAIN_SET_CIDR_NFT_NAME} destinations are proxied"
+        else
+            nft add rule inet clash output meta mark 0 meta l4proto tcp meta mark set "$MARK_TPROXY"
+            nft add rule inet clash output meta mark 0 meta l4proto udp meta mark set "$output_udp_mark"
+            msg "OUTPUT: Marking applied for all traffic"
+        fi
     fi
 
     msg "Output chain rules applied"
@@ -2349,8 +2494,18 @@ apply_nft_rules() {
     fi
 
     if is_domain_set_mode; then
-        nft add set inet clash "$DOMAIN_SET_NFT_NAME" "{ type ipv4_addr; size 65535; flags dynamic,timeout; timeout $DOMAIN_SET_TIMEOUT; }"
-        msg "Created domain nft set: $DOMAIN_SET_NFT_NAME (timeout: $DOMAIN_SET_TIMEOUT)"
+        if ! nft add set inet clash "$DOMAIN_SET_NFT_NAME" \
+            "{ type ipv4_addr; size 65535; flags dynamic,timeout; timeout $DOMAIN_SET_TIMEOUT; }"; then
+            warn "Failed to create nft set inet clash $DOMAIN_SET_NFT_NAME"
+            return 1
+        fi
+        # Match fakeip_whitelist: interval set without explicit size (size breaks on some OpenWrt nft builds).
+        if ! nft add set inet clash "$DOMAIN_SET_CIDR_NFT_NAME" \
+            '{ type ipv4_addr; flags interval; auto-merge; }'; then
+            warn "Failed to create nft set inet clash $DOMAIN_SET_CIDR_NFT_NAME"
+            return 1
+        fi
+        msg "Created domain nft sets: $DOMAIN_SET_NFT_NAME (dnsmasq, timeout $DOMAIN_SET_TIMEOUT), $DOMAIN_SET_CIDR_NFT_NAME (rule-provider IP-CIDR)"
     fi
 
     case "$MODE" in
@@ -2474,6 +2629,17 @@ apply_iptables_rules() {
 # SECTION: Rule update — refresh subscription cache and rebuild firewall rules
 # =============================================================================
 
+# Dnsmasq nftset + domain_proxy_cidr refresh (independent of proxy-providers subscriptions).
+run_domain_set_maintenance() {
+    refresh_domain_set_dnsmasq_config
+    if [ "$DOMAIN_SET_CONFIG_CHANGED" = "1" ]; then
+        /etc/init.d/dnsmasq restart >/dev/null 2>&1 \
+            && msg "dnsmasq restarted after domain set config update" \
+            || msg "WARNING: Failed to restart dnsmasq after domain set config update"
+    fi
+    update_domain_set_static_cidrs
+}
+
 update_rules() {
     msg "Intelligently updating subscription IPs..."
     load_all_settings_once
@@ -2482,12 +2648,13 @@ update_rules() {
     # (runs every 30 minutes by default). update_fakeip_whitelist_sets is a
     # no-op when the current fake-ip-filter-mode is neither whitelist nor rule.
     update_fakeip_whitelist_sets
+    run_domain_set_maintenance
 
-    refresh_domain_set_dnsmasq_config
-    if [ "$DOMAIN_SET_CONFIG_CHANGED" = "1" ]; then
-        /etc/init.d/dnsmasq restart >/dev/null 2>&1 \
-            && msg "dnsmasq restarted after domain set config update" \
-            || msg "WARNING: Failed to restart dnsmasq after domain set config update"
+    local providers_exist
+    providers_exist=$(extract_proxy_providers)
+    if [ -z "$providers_exist" ]; then
+        msg "No proxy-providers configured, skipping subscription IP refresh"
+        return 0
     fi
 
     local old_ips=""
@@ -3039,7 +3206,7 @@ restore_bridge_nf_call() {
 # =============================================================================
 
 start() {
-    msg "Starting Clash rules script"
+    msg "Starting Clash rules script ($CLASH_RULES_ID)"
 
     # Check if config file exists before proceeding
     if [ ! -f "$CONFIG_FILE" ]; then
@@ -3107,6 +3274,8 @@ start() {
                 msg "Detected fake-ip range: $fake_ip_range with blacklist mode - proxy will be applied only to this range"
                 ;;
         esac
+    elif is_domain_set_mode; then
+        msg "Domain set mode active (DOMAIN_SET_MODE=$DOMAIN_SET_MODE) - proxy only @$DOMAIN_SET_NFT_NAME and @$DOMAIN_SET_CIDR_NFT_NAME"
     else
         msg "No fake-ip configuration detected - proxy will be applied to all traffic"
     fi
@@ -3115,6 +3284,7 @@ start() {
         msg "Using nftables for traffic redirection"
         if apply_nft_rules "$server_ips" "$fake_ip_range" "$fake_ip_filter_mode"; then
             refresh_domain_set_dnsmasq_config
+            update_domain_set_static_cidrs
             setup_routing_rules
         else
             msg "ERROR: Failed to apply nftables rules"
@@ -3223,15 +3393,18 @@ case "$1" in
         start
         ;;
     update)
-        providers_exist=$(extract_proxy_providers)
-        if [ -z "$providers_exist" ]; then
-            msg "No proxy-providers configured, nothing to update."
-            exit 0
-        fi
         update_rules
         ;;
     update-ip-whitelist)
         update_fakeip_whitelist_sets
+        ;;
+    repair-domain-set)
+        load_all_settings_once
+        if ! is_domain_set_mode; then
+            msg "DOMAIN_SET_MODE is '$DOMAIN_SET_MODE' (not domain-set/real-ip); nothing to repair"
+            exit 0
+        fi
+        run_domain_set_maintenance
         ;;
     tun_route_setup)
         tun_route_setup

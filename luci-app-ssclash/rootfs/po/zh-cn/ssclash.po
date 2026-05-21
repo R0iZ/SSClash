@@ -65,6 +65,9 @@ msgstr "Clash 配置"
 msgid "Your current Clash config. When applied, the changes will be saved and the service will be restarted."
 msgstr "当前 Clash 配置。应用后将保存更改并重启服务。"
 
+msgid "Your current Clash config. Real-IP Domain Set mode is enabled: the editor shows a recommended DNS block (no fake-ip) between SSClash markers — adjust nameserver to your LAN DNS. Save to write config.yaml."
+msgstr "当前 Clash 配置。已启用 Real-IP Domain Set：编辑器显示 SSClash 标记之间的推荐 DNS 块（无 fake-ip），请将 nameserver 改为您的 LAN DNS。保存后写入 config.yaml。"
+
 msgid "Save & Restart core"
 msgstr "保存并重启内核"
 
@@ -308,8 +311,8 @@ msgstr "示例：30m、6h、24h。请让它长于客户端 DNS 缓存 TTL。"
 msgid "Real-IP Domain Set: "
 msgstr "Real-IP Domain Set："
 
-msgid "SSClash generates dnsmasq nftset rules from proxied domain rule-providers. Clients receive real IPs; dnsmasq adds those IPs to nft set inet clash domain_proxy, and nftables routes matching traffic through the selected proxy mode. Requires firewall4/nftables and clients using router DNS."
-msgstr "SSClash 会根据走代理的域名 rule-providers 生成 dnsmasq nftset 规则。客户端收到真实 IP；dnsmasq 将这些 IP 加入 nft set inet clash domain_proxy，nftables 再通过所选代理模式路由匹配流量。需要 firewall4/nftables，并且客户端必须使用路由器 DNS。"
+msgid "SSClash generates dnsmasq nftset rules from proxied domain rule-providers and loads IPv4 CIDR entries into inet clash domain_proxy_cidr. Clients receive real IPs; dnsmasq adds resolved A records to domain_proxy. Nftables routes only matching traffic through the selected proxy mode. Requires firewall4/nftables and clients using router DNS. Saving settings or opening the Configuration tab inserts a DNS sample block (no fake-ip) into config.yaml."
+msgstr "SSClash 会根据走代理的 rule-providers 生成 dnsmasq nftset 规则，并将 IPv4 CIDR 载入 inet clash domain_proxy_cidr。客户端收到真实 IP；dnsmasq 将解析到的 A 记录加入 domain_proxy。nftables 仅路由匹配流量到所选代理模式。需要 firewall4/nftables，并且客户端必须使用路由器 DNS。保存设置或打开「配置」页会在 config.yaml 中插入 DNS 示例块（无 fake-ip）。"
 
 msgid "Off: "
 msgstr "关闭："

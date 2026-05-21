@@ -132,7 +132,7 @@ SSClash предлагает два режима обработки интерф
 ### Дополнительные настройки:
 
 * **Блокировать QUIC-трафик**: Блокирует UDP-порт 443 для повышения эффективности прокси для таких сервисов, как YouTube
-* **Real-IP Domain Set**: Дополнительный режим для nftables/firewall4, при котором домены из проксируемых `rule-providers` получают реальные DNS-ответы. SSClash генерирует для `dnsmasq` правила `nftset=`, `dnsmasq` добавляет резолвнутые IP в set `inet clash domain_proxy`, а nftables маршрутизирует совпадающий трафик через выбранный режим прокси. Клиенты должны использовать DNS роутера.
+* **Real-IP Domain Set**: Дополнительный режим для nftables/firewall4, при котором домены из проксируемых `rule-providers` получают реальные DNS-ответы. SSClash генерирует для `dnsmasq` правила `nftset=`, `dnsmasq` добавляет резолвнутые IP в set `inet clash domain_proxy`, а IPv4 CIDR из тех же providers — в `domain_proxy_cidr`. Nftables маршрутизирует **только** совпадающий трафик через Mihomo (как fake-ip, но по реальным IP/CIDR). Остальной трафик, включая LAN, не маркируется глобально. Клиенты должны использовать DNS роутера.
 
 <p align="center">
  <img src=".github/assets/images/screenshots/scr-01.png" width="100%">

@@ -150,6 +150,10 @@ function loadScript(src) {
     });
 }
 
+async function ensureDomainSetConfigApi() {
+    await loadScript('/luci-static/resources/view/ssclash/domain-set-config.js');
+}
+
 async function initializeAceEditor(content) {
     await loadScript('/luci-static/resources/view/ssclash/ace/ace.js');
     ace.config.set('basePath', '/luci-static/resources/view/ssclash/ace/');
@@ -204,9 +208,22 @@ async function getLatestSSClashRelease() {
 
 return view.extend({
     load: function() {
-        return L.resolveDefault(fs.read('/opt/clash/config.yaml'), '');
+        return Promise.all([
+            L.resolveDefault(fs.read('/opt/clash/config.yaml'), ''),
+            L.resolveDefault(fs.read('/opt/clash/settings'), '')
+        ]);
     },
-    render: async function(config) {
+    render: async function(data) {
+        const [rawConfig, settingsText] = data;
+        await ensureDomainSetConfigApi();
+
+        let config = rawConfig || '';
+        const domainSetMode = SSClashDomainSetConfig.parseDomainSetModeFromSettings(settingsText);
+        const domainSetEnabled = SSClashDomainSetConfig.isEnabled(domainSetMode);
+        if (domainSetEnabled && config) {
+            config = SSClashDomainSetConfig.apply(config, true);
+        }
+
         const running = await getServiceStatus();
 
         const writeAndTestConfig = async function() {
@@ -420,7 +437,11 @@ return view.extend({
                 }, running ? _('Clash is running') : _('Clash stopped'))
             ]),
             E('h2', _('Clash Configuration')),
-            E('p', { 'class': 'cbi-section-descr' }, _('Your current Clash config. When applied, the changes will be saved and the service will be restarted.')),
+            E('p', { 'class': 'cbi-section-descr' },
+                domainSetEnabled
+                    ? _('Your current Clash config. Real-IP Domain Set mode is enabled: the editor shows a recommended DNS block (no fake-ip) between SSClash markers — adjust nameserver to your LAN DNS. Save to write config.yaml.')
+                    : _('Your current Clash config. When applied, the changes will be saved and the service will be restarted.')
+            ),
             E('div', {
                 'id': 'editor',
                 'style': 'width: 100%; height: 640px; margin-bottom: 15px;'

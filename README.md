@@ -131,7 +131,7 @@ SSClash offers two interface processing modes:
 ### Additional Settings:
 
 - **Block QUIC traffic**: Blocks UDP port 443 to improve proxy effectiveness for services like YouTube
-- **Real-IP Domain Set mode**: Optional nftables/firewall4 mode that keeps real DNS answers for proxied domain rule-providers. SSClash generates `dnsmasq` `nftset=` rules, `dnsmasq` adds resolved IPs to the `inet clash domain_proxy` set, and nftables routes matching traffic through the selected proxy mode. Clients must use the router DNS.
+- **Real-IP Domain Set mode**: Optional nftables/firewall4 mode that keeps real DNS answers for proxied domain rule-providers. SSClash generates `dnsmasq` `nftset=` rules, `dnsmasq` adds resolved IPs to `inet clash domain_proxy`, and IPv4 CIDR entries from the same providers go to `domain_proxy_cidr`. Nftables routes **only** matching traffic through Mihomo (same selective model as fake-ip, but with real IPs/CIDRs). Other traffic is not globally marked. Clients must use the router DNS.
 
 <p align="center">
  <img src=".github/assets/images/screenshots/scr-01.png" width="100%">

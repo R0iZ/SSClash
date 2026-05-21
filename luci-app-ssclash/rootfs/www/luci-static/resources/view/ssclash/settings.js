@@ -375,145 +375,24 @@ function transformProxyMode(content, proxyMode, tunStack) {
     return newLines.join('\n');
 }
 
-function extractDomainSetRuleProviders(content) {
-    const lines = content.split('\n');
-    const providers = {};
-    const proxiedRuleSets = new Set();
-    let inProviders = false;
-    let currentProvider = null;
-    let inRules = false;
+let domainSetConfigApiReady = null;
 
-    for (const rawLine of lines) {
-        const line = rawLine.replace(/\r$/, '');
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith('#')) continue;
-
-        if (/^[A-Za-z][^:\s]*:/.test(line) && !/^\s/.test(line)) {
-            inProviders = trimmed.startsWith('rule-providers:');
-            inRules = trimmed.startsWith('rules:');
-            currentProvider = null;
-            continue;
-        }
-
-        if (inProviders) {
-            const providerMatch = line.match(/^\s{2}([^#:\s][^:]*):\s*(?:#.*)?$/);
-            if (providerMatch) {
-                currentProvider = providerMatch[1].trim();
-                providers[currentProvider] = { behavior: 'classical' };
-                continue;
-            }
-
-            if (currentProvider) {
-                const behaviorMatch = line.match(/^\s+behavior:\s*([^#\s]+)/);
-                if (behaviorMatch) {
-                    providers[currentProvider].behavior = behaviorMatch[1].trim();
-                }
-            }
-        }
-
-        if (inRules) {
-            const ruleMatch = trimmed.match(/^-\s*RULE-SET\s*,\s*([^,]+)\s*,\s*([^,\s]+)/i);
-            if (!ruleMatch) continue;
-
-            const name = ruleMatch[1].trim();
-            const action = ruleMatch[2].trim().toUpperCase();
-            if (['DIRECT', 'REJECT', 'REJECT-DROP', 'PASS'].includes(action)) continue;
-            proxiedRuleSets.add(name);
-        }
+function ensureDomainSetConfigApi() {
+    if (typeof SSClashDomainSetConfig !== 'undefined') {
+        return Promise.resolve();
     }
-
-    return Array.from(proxiedRuleSets).filter(name => {
-        const provider = providers[name];
-        return provider && ['domain', 'classical'].includes(provider.behavior);
-    }).sort();
-}
-
-function stripManagedDomainSetFakeIpFilter(lines) {
-    const result = [];
-    let skipping = false;
-
-    for (const line of lines) {
-        if (line.includes('# SSClash Domain Set: BEGIN')) {
-            skipping = true;
-            continue;
-        }
-        if (line.includes('# SSClash Domain Set: END')) {
-            skipping = false;
-            continue;
-        }
-        if (!skipping) result.push(line);
+    if (!domainSetConfigApiReady) {
+        domainSetConfigApiReady = new Promise(function(resolve, reject) {
+            const script = document.createElement('script');
+            script.src = '/luci-static/resources/view/ssclash/domain-set-config.js';
+            script.onload = resolve;
+            script.onerror = function() {
+                reject(new Error('Failed to load domain-set-config.js'));
+            };
+            document.head.appendChild(script);
+        });
     }
-
-    return result;
-}
-
-function transformDomainSetMode(content, domainSetMode) {
-    let lines = stripManagedDomainSetFakeIpFilter(content.split('\n'));
-    if (domainSetMode !== 'domain-set') {
-        return lines.join('\n');
-    }
-
-    const providerNames = extractDomainSetRuleProviders(lines.join('\n'));
-    if (providerNames.length === 0) {
-        return lines.join('\n');
-    }
-
-    const managedBlock = [
-        '    # SSClash Domain Set: BEGIN',
-        ...providerNames.map(name => `    - RULE-SET,${name},real-ip`),
-        '    # SSClash Domain Set: END'
-    ];
-
-    let dnsStart = -1;
-    let dnsEnd = lines.length;
-    for (let i = 0; i < lines.length; i++) {
-        if (lines[i].match(/^dns:\s*$/)) {
-            dnsStart = i;
-            break;
-        }
-    }
-    if (dnsStart === -1) return lines.join('\n');
-
-    for (let i = dnsStart + 1; i < lines.length; i++) {
-        if (lines[i].match(/^[A-Za-z][^:\s]*:/) && !lines[i].match(/^\s/)) {
-            dnsEnd = i;
-            break;
-        }
-    }
-
-    let filterModeIndex = -1;
-    let filterIndex = -1;
-    let filterEnd = dnsEnd;
-    for (let i = dnsStart + 1; i < dnsEnd; i++) {
-        if (lines[i].match(/^\s{2}fake-ip-filter-mode:/)) filterModeIndex = i;
-        if (lines[i].match(/^\s{2}fake-ip-filter:\s*$/)) {
-            filterIndex = i;
-            filterEnd = i + 1;
-            while (filterEnd < dnsEnd && (lines[filterEnd].match(/^\s{4}/) || lines[filterEnd].trim() === '')) {
-                filterEnd++;
-            }
-            break;
-        }
-    }
-
-    if (filterModeIndex !== -1) {
-        lines[filterModeIndex] = '  fake-ip-filter-mode: rule';
-    } else {
-        lines.splice(dnsStart + 1, 0, '  fake-ip-filter-mode: rule');
-        dnsEnd++;
-        if (filterIndex !== -1) {
-            filterIndex++;
-            filterEnd++;
-        }
-    }
-
-    if (filterIndex !== -1) {
-        lines.splice(filterEnd, 0, ...managedBlock);
-    } else {
-        lines.splice(dnsStart + 2, 0, '  fake-ip-filter:', ...managedBlock);
-    }
-
-    return lines.join('\n');
+    return domainSetConfigApiReady;
 }
 
 async function detectCurrentProxyMode() {
@@ -704,8 +583,9 @@ HWID_DEVICE_OS=${hwidDeviceOS}
 
         const configContent = await L.resolveDefault(fs.read('/opt/clash/config.yaml'), '');
         if (configContent) {
+            await ensureDomainSetConfigApi();
             let updatedConfig = transformProxyMode(configContent, proxyMode, tunStack);
-            updatedConfig = transformDomainSetMode(updatedConfig, domainSetMode);
+            updatedConfig = SSClashDomainSetConfig.apply(updatedConfig, domainSetMode === 'domain-set');
 
             if (enableHwid) {
                 const hwidValues = await getHwidValues();
@@ -1291,7 +1171,7 @@ function createDomainSetModeSection(currentDomainSetMode, currentDomainSetTimeou
             hint.style.borderLeftColor = '#28a745';
             hint.appendChild(E('strong', {}, _('Real-IP Domain Set: ') ));
             hint.appendChild(document.createTextNode(
-                _('SSClash generates dnsmasq nftset rules from proxied domain rule-providers. Clients receive real IPs; dnsmasq adds those IPs to nft set inet clash domain_proxy, and nftables routes matching traffic through the selected proxy mode. Requires firewall4/nftables and clients using router DNS.')
+                _('SSClash generates dnsmasq nftset rules from proxied domain rule-providers and loads IPv4 CIDR entries into inet clash domain_proxy_cidr. Clients receive real IPs; dnsmasq adds resolved A records to domain_proxy. Nftables routes only matching traffic through the selected proxy mode. Requires firewall4/nftables and clients using router DNS. Saving settings or opening the Configuration tab inserts a DNS sample block (no fake-ip) into config.yaml.')
             ));
         } else {
             hint.style.borderLeftColor = '#777';
@@ -1830,6 +1710,8 @@ return view.extend({
     },
 
     render: async function(data) {
+        await ensureDomainSetConfigApi();
+
         const [interfaces, settings] = data;
         const selectedInterfaces = await loadInterfacesByMode(settings.mode);
 
